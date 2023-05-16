@@ -188,7 +188,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include=".gitignore" />
-    <Content Include="README" />
+    <Content Include="README.md" />
     <Content Include="secrets.xml">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
