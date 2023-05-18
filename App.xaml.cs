@@ -13,5 +13,6 @@ namespace FirebaseRealtimeWPF
     /// </summary>
     public partial class App : Application
     {
+        
     }
 }

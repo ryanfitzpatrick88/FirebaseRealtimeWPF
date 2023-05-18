@@ -1,10 +1,13 @@
-﻿using Firebase.Auth;
+﻿using Caliburn.Micro;
+using System.Windows;
+using Firebase.Auth;
 using Firebase.Auth.Providers;
 using Firebase.Auth.Repository;
 using Firebase.Database;
 using FirebaseAdmin;
 using Google.Apis.Auth.OAuth2;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -14,35 +17,40 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.IdentityModel.Tokens.Jwt;
+using System.Runtime.CompilerServices;
 
-namespace FirebaseRealtimeWPF
+namespace FirebaseRealtimeWPF.ViewModels
 {
-    /// <summary>
-    /// Interaction logic for MainWindow.xaml
-    /// </summary>
-    public partial class MainWindow : Window
+    public class ProductViewModel : Screen, INotifyPropertyChanged
     {
         private ObservableCollection<Product> products = new ObservableCollection<Product>();
         private FirebaseAuthClient authClient;
         private FirebaseClient firebaseClient;
         private Settings settings;
+        private string status;
+        private FirebaseService firebaseService;
         
-        
-        public MainWindow()
+        private IEventAggregator _eventAggregator;
+        public ProductViewModel(IEventAggregator eventAgg)
         {
+            _eventAggregator = eventAgg;
+            
+            Status = "Initializing...";
             this.settings = new Settings();
             this.settings.LoadSecrets();
+
+            firebaseService = new FirebaseService();
             
-            InitializeComponent();
-            DataContext = this;
+            //InitializeComponent();
+            //DataContext = this;
             
-            authClient = GetFirebaseAuthClient();
+            authClient = firebaseService.GetFirebaseAuthClient();
             var tokenRefreshes = new Subject<string>();
             var tokenSubscription = tokenRefreshes.Subscribe(token =>
             {
                 Console.WriteLine("Token refreshed: " + token);
             });
-            firebaseClient = GetFirebaseClient(authClient, tokenRefreshes);
+            firebaseClient = firebaseService.GetFirebaseClient(authClient, tokenRefreshes);
 
             /*
             var factory = new ProductFactory();
@@ -50,28 +58,54 @@ namespace FirebaseRealtimeWPF
             foreach (var product in newProducts)
                 products.Add(product);
                 */
-            RunTask().Wait();
+            
+            ConfigureProducts("products");
         }
 
         public ObservableCollection<Product> Products { get { return products; } }
+        public IDisposable Subscription { get; set; }
 
-        private async Task RunTask()
+        public string Status
+        {
+            get { return status; }
+            set
+            {
+                status = value;
+                OnPropertyChanged(nameof(Status));
+            }
+        }
+        private void ConfigureProducts(string childName)
         {
             try {
-                var child = firebaseClient.Child("products");
+                Status = "Configuring products...";
+                var child = firebaseClient.Child(childName);
 
+                Status = "creating observable...";
                 var observable = child.AsObservable<Product>();
 
-                var subscription = observable
+                System.Timers.Timer timer = new System.Timers.Timer(1000);
+                timer.AutoReset = false; // So it only fires once
+                timer.Elapsed += (sender, e) =>
+                {
+                    Status = "Done";
+                    timer.Stop();
+                };
+                
+                Status = "Subscribing to products... please wait...";
+                this.Subscription = observable
                     .Where(f => !string.IsNullOrEmpty(f.Key)) // you get empty Key when there are no data on the server for specified node
                     .Subscribe((f) =>
                     {
+                        timer.Stop(); // stop the timer
+                        timer.Start(); // and start it again. This will reset the timer.
+                        
+                        Status = $"Updating products... {f.Key}";
                         var existing = Products.Where(i => i.Id == f.Object.Id).FirstOrDefault();
                         if(existing != null)
                         {
-                            Dispatcher.Invoke(() =>
+                            Application.Current.Dispatcher.Invoke(() =>
                             {
-                                existing.Id = f.Object.Id;
+                            existing.Id = f.Object.Id;
                                 existing.Name = f.Object.Name;
                                 existing.Price = f.Object.Price;
                                 existing.ManufactureDate = f.Object.ManufactureDate;
@@ -102,92 +136,22 @@ namespace FirebaseRealtimeWPF
                                 Description = f.Object.Description,
                                 StockQuantity = f.Object.StockQuantity
                             };
-                            Dispatcher.Invoke(() =>
+                            
+                            Application.Current.Dispatcher.Invoke(() =>
                             {
                                 Products.Add(product);
                             });
                         }
                     });
-
-
-                //foreach (var product in child)
-                //{
-                //    Console.WriteLine($"{product.Key} is {product.Object.Name}.");
-                //}
             }
             catch (Exception ex)
             {
+                Status = $"Error configuring products. {ex.ToString()}";
                 Console.WriteLine(ex.ToString());
             }
         }
 
-        private Firebase.Auth.UserCredential userCredential;
-        private string token;
-        private FirebaseClient GetFirebaseClient(FirebaseAuthClient firebaseClient, Subject<string> tokenRefreshes)
-        {
-            var client = new FirebaseClient(settings.BaseUrl, new FirebaseOptions()
-            {
-                AuthTokenAsyncFactory = async () =>
-                {
-                    if (userCredential == null)
-                    {
-                        userCredential = await firebaseClient.SignInWithEmailAndPasswordAsync(settings.Email, settings.Password);
-                    }
-
-                    if (token == null)
-                    {
-                        token = await userCredential.User.GetIdTokenAsync(true);
-                        tokenRefreshes.OnNext(token); // emit event
-                    }
-                    else
-                    {
-                        // Decode the token without validating it
-                        var handler = new JwtSecurityTokenHandler();
-                        var jwtToken = handler.ReadJwtToken(token);
-
-                        // Check if the token is expired
-                        var expiryTimeUnix = jwtToken.Payload.Exp.Value;
-                        var expiryDateTime = DateTimeOffset.FromUnixTimeSeconds(expiryTimeUnix).UtcDateTime;
-
-                        if (expiryDateTime > DateTime.UtcNow)
-                        {
-                            // Token is still valid
-                            return token;
-                        }
-                        else
-                        {
-                            // Token is expired, refresh it
-                            token = await userCredential.User.GetIdTokenAsync(true);
-                            tokenRefreshes.OnNext(token); // emit event
-                        }
-                    }
-
-                    return token;
-                }
-            });
-            return client;
-        }
-
-        private FirebaseAuthClient GetFirebaseAuthClient()
-        {
-            var config = new FirebaseAuthConfig
-            {
-                ApiKey = settings.ApiKey, // your firebase API Key
-                AuthDomain = settings.AuthDomain, // your firebase domain
-                Providers = new FirebaseAuthProvider[]
-                {
-                    // Add and configure individual providers
-                    new GoogleProvider().AddScopes("email"),
-                    new EmailProvider()
-                },
-                UserRepository = new FileUserRepository("FirebaseSample") // persist data into %AppData%\FirebaseSample
-            };
-
-            // ...and create your FirebaseAuthClient
-            var firebaseClient = new FirebaseAuthClient(config);
-            
-            return firebaseClient;
-        }
+        
 
         private async void UploadClicked(object sender, RoutedEventArgs e)
         {
@@ -205,6 +169,41 @@ namespace FirebaseRealtimeWPF
             {
                 string err = ex.ToString();
             }
+        }
+
+        public void ReconnectClicked()
+        {
+            products.Clear();
+            Subscription.Dispose();
+            ConfigureProducts("products");
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        protected bool SetField<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
+        {
+            if (EqualityComparer<T>.Default.Equals(field, value)) return false;
+            field = value;
+            OnPropertyChanged(propertyName);
+            return true;
+        }
+        
+        protected override async Task OnDeactivateAsync(bool close, CancellationToken cancellationToken)
+        {
+            await _eventAggregator.PublishOnUIThreadAsync("Closing");
+        }
+
+        protected override async Task OnActivateAsync(CancellationToken cancellationToken)
+        {
+            await _eventAggregator.PublishOnUIThreadAsync("Loading");
+            await Task.Delay(2000);
+            await _eventAggregator.PublishOnUIThreadAsync(string.Empty);
+
         }
     }
 }
